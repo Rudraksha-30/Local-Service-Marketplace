@@ -23,7 +23,10 @@ These describe what the system does.
 19.	The system shall allow a Customer to view the full Service History timeline for their property.
 20.	The system shall allow a Professional (with permission) to view a property's Service History before starting a new job.
 21.	The system shall enforce Role-Based Access Control so each of the 4 roles can only perform actions permitted for that role.
+
+    
 Non-Functional Requirements
+
 These describe how well the system does it — performance, security, usability, and related qualities.
 1.	Passwords must be hashed (bcrypt) before storage; plaintext passwords must never be stored or logged.
 2.	All API endpoints except signup/login must require a valid JWT; role-restricted endpoints must reject tokens with an insufficient role.
