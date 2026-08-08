@@ -1,7 +1,8 @@
 # Local-Service-Marketplace
-Functional & Non-Functional Requirements
-Functional Requirements
-These describe what the system does.
+
+<h1>Functional Requirements</h1>
+
+<h2>These describe what the system does.</h2>
 1.	The system shall allow a new user to register as a Customer or Professional with email/phone and password.
 2.	The system shall authenticate users via email/password and issue a JWT on successful login.
 3.	The system shall allow a Customer to create a Service Request by selecting a category and describing the issue.
@@ -25,9 +26,9 @@ These describe what the system does.
 21.	The system shall enforce Role-Based Access Control so each of the 4 roles can only perform actions permitted for that role.
 
     
-Non-Functional Requirements
+<h1>Non-Functional Requirements</h1>
 
-These describe how well the system does it — performance, security, usability, and related qualities.
+<h2>These describe how well the system does it — performance, security, usability, and related qualities.</h2>
 1.	Passwords must be hashed (bcrypt) before storage; plaintext passwords must never be stored or logged.
 2.	All API endpoints except signup/login must require a valid JWT; role-restricted endpoints must reject tokens with an insufficient role.
 3.	Core API responses (booking creation, trust score fetch) should return within 500ms under normal load on the deployed free-tier environment.
