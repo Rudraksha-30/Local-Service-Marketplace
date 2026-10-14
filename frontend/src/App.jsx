@@ -5,11 +5,13 @@ import CustomerDashboard from './pages/CustomerDashboard';
 import ProfessionalDashboard from './pages/ProfessionalDashboard';
 import InspectorDashboard from './pages/InspectorDashboard';
 import AdminDashboard from './pages/AdminDashboard';
+import LoginPage from './pages/LoginPage';
 
 export default function App() {
   return (
     <Routes>
-      <Route path="/" element={<LandingPage />} />
+      <Route path="/" element={<LoginPage />}/>
+      <Route path="/home" element={<LandingPage />} />
       <Route path="/dashboard/customer" element={<CustomerDashboard />} />
       <Route path="/dashboard/professional" element={<ProfessionalDashboard />} />
       <Route path="/dashboard/inspector" element={<InspectorDashboard />} />
