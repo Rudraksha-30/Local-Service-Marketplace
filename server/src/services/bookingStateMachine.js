@@ -41,7 +41,7 @@ const TRANSITIONS = {
     [STATUS.CANCELLED]: [ROLE.CUSTOMER, ROLE.PROVIDER],
   },
   [STATUS.IN_PROGRESS]: {
-    [STATUS.COMPLETED]: [ROLE.PROVIDER],
+    [STATUS.COMPLETED]: [ROLE.CUSTOMER],
   },
   // Terminal states: no outgoing transitions
   [STATUS.COMPLETED]: {},

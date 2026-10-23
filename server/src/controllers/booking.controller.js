@@ -1,18 +1,45 @@
-const Booking = require('../models/Booking');
-const User = require('../models/User');
-const Review = require('../models/Review');
-const Dispute = require('../models/Dispute');
-const ProviderProfile = require('../models/ProviderProfile');
-const { STATUS, canTransition, isValidTransition, SLOT_BLOCKING_STATUSES } = require('../services/bookingStateMachine');
-const { addMinutes } = require('../utils/timeSlots');
-const { recalculateForProvider } = require('../services/trustScore.service');
-const { notify } = require('../services/notify');
+const Booking = require("../models/Booking");
+const User = require("../models/User");
+const Review = require("../models/Review");
+const Dispute = require("../models/Dispute");
+const ProviderProfile = require("../models/ProviderProfile");
+const {
+  STATUS,
+  canTransition,
+  isValidTransition,
+  SLOT_BLOCKING_STATUSES,
+} = require("../services/bookingStateMachine");
+const { addMinutes } = require("../utils/timeSlots");
+const { recalculateForProvider } = require("../services/trustScore.service");
+const { notify } = require("../services/notify");
+const fs = require("fs/promises");
+const path = require("path");
 
 /**
  * Is the provider free for [start, end)?
  * Overlap in SQL-ish terms:  existing.start < end  AND  existing.end > start
  */
-async function providerHasConflict(providerId, start, end, excludeBookingId = null) {
+
+async function removeUploadedFiles(files = []) {
+  await Promise.all(
+    files.map(async (file) => {
+      try {
+        await fs.unlink(file.path);
+      } catch (error) {
+        if (error.code !== "ENOENT") {
+          console.error("Failed to remove uploaded file:", error);
+        }
+      }
+    }),
+  );
+}
+
+async function providerHasConflict(
+  providerId,
+  start,
+  end,
+  excludeBookingId = null,
+) {
   const query = {
     provider: providerId,
     status: { $in: SLOT_BLOCKING_STATUSES },
@@ -27,8 +54,8 @@ async function providerHasConflict(providerId, start, end, excludeBookingId = nu
 async function withFlags(bookings) {
   const ids = bookings.map((b) => b._id);
   const [reviews, disputes] = await Promise.all([
-    Review.find({ booking: { $in: ids } }).select('booking'),
-    Dispute.find({ booking: { $in: ids }, status: 'open' }).select('booking'),
+    Review.find({ booking: { $in: ids } }).select("booking"),
+    Dispute.find({ booking: { $in: ids }, status: "open" }).select("booking"),
   ]);
   const reviewed = new Set(reviews.map((r) => String(r.booking)));
   const disputed = new Set(disputes.map((d) => String(d.booking)));
@@ -40,83 +67,151 @@ async function withFlags(bookings) {
 }
 
 const STATUS_LABEL = {
-  accepted: 'accepted',
-  rejected: 'declined',
-  in_progress: 'started',
-  completed: 'marked as completed',
-  cancelled: 'cancelled',
+  accepted: "accepted",
+  rejected: "declined",
+  in_progress: "started",
+  completed: "marked as completed",
+  cancelled: "cancelled",
 };
 
 // FR-11
+
 exports.createBooking = async (req, res) => {
-  const { providerId, category, scheduledStart, durationMinutes = 60, notes, address } = req.body;
+  const uploadedFiles = req.files || [];
 
-  const providerUser = await User.findOne({ _id: providerId, role: 'provider' });
-  const profile = providerUser && (await ProviderProfile.findOne({ user: providerUser._id }));
-  if (!profile || !profile.isActive) return res.status(404).json({ message: 'Provider not found' });
+  try {
+    const {
+      providerId,
+      category,
+      scheduledStart,
+      durationMinutes = 60,
+      notes,
+      address,
+    } = req.body;
 
-  const cat = String(category).trim().toLowerCase();
-  if (!profile.categories.includes(cat)) {
-    return res.status(400).json({ message: `This provider does not offer "${cat}"` });
+    const providerUser = await User.findOne({
+      _id: providerId,
+      role: "provider",
+    });
+
+    const profile =
+      providerUser &&
+      (await ProviderProfile.findOne({ user: providerUser._id }));
+
+    if (!profile || !profile.isActive) {
+      await removeUploadedFiles(uploadedFiles);
+      return res.status(404).json({ message: "Provider not found" });
+    }
+
+    const cat = String(category).trim().toLowerCase();
+
+    if (!profile.categories.includes(cat)) {
+      await removeUploadedFiles(uploadedFiles);
+      return res.status(400).json({
+        message: `This provider does not offer "${cat}"`,
+      });
+    }
+
+    const start = new Date(scheduledStart);
+
+    if (start <= new Date()) {
+      await removeUploadedFiles(uploadedFiles);
+      return res.status(400).json({
+        message: "Please choose a time in the future",
+      });
+    }
+
+    const end = addMinutes(start, durationMinutes);
+
+    if (
+      profile.leaveStart &&
+      profile.leaveEnd &&
+      start <= profile.leaveEnd &&
+      end > profile.leaveStart
+    ) {
+      await removeUploadedFiles(uploadedFiles);
+
+      return res.status(409).json({
+        message: "This provider is on leave during the selected booking time",
+      });
+    }
+
+    if (await providerHasConflict(providerUser._id, start, end)) {
+      await removeUploadedFiles(uploadedFiles);
+      return res.status(409).json({
+        message: "This time slot is already booked",
+      });
+    }
+
+    const attachments = uploadedFiles.map((file) => ({
+      filename: file.filename,
+      originalName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+      storagePath: path.posix.join(
+        "uploads",
+        "booking-attachments",
+        file.filename,
+      ),
+    }));
+
+    const booking = await Booking.create({
+      customer: req.user._id,
+      provider: providerUser._id,
+      category: cat,
+      scheduledStart: start,
+      durationMinutes,
+      scheduledEnd: end,
+      notes,
+      address,
+      attachments,
+      statusHistory: [{ status: STATUS.REQUESTED, by: req.user._id }],
+    });
+
+    await notify(
+      providerUser._id,
+      "booking",
+      `New ${cat} booking request from ${req.user.name}`,
+      `/bookings/${booking._id}`,
+    );
+
+    res.status(201).json({ booking });
+  } catch (error) {
+    await removeUploadedFiles(uploadedFiles);
+    throw error;
   }
-
-  const start = new Date(scheduledStart);
-  if (start <= new Date()) {
-    return res.status(400).json({ message: 'Please choose a time in the future' });
-  }
-  const end = addMinutes(start, durationMinutes);
-
-  // FR-15: friendly early check. The authoritative check runs again at accept time.
-  if (await providerHasConflict(providerUser._id, start, end)) {
-    return res.status(409).json({ message: 'This time slot is already booked' }); // NFR-10
-  }
-
-  const booking = await Booking.create({
-    customer: req.user._id,
-    provider: providerUser._id,
-    category: cat,
-    scheduledStart: start,
-    durationMinutes,
-    scheduledEnd: end,
-    notes,
-    address,
-    statusHistory: [{ status: STATUS.REQUESTED, by: req.user._id }],
-  });
-
-  // FR-12: tell the provider
-  await notify(
-    providerUser._id,
-    'booking',
-    `New ${cat} booking request from ${req.user.name}`,
-    `/bookings/${booking._id}`
-  );
-
-  res.status(201).json({ booking });
 };
 
 // Customers see their bookings, providers see theirs
 exports.listMyBookings = async (req, res) => {
-  const filter = req.user.role === 'provider' ? { provider: req.user._id } : { customer: req.user._id };
+  const filter =
+    req.user.role === "provider"
+      ? { provider: req.user._id }
+      : { customer: req.user._id };
   if (req.query.status) filter.status = String(req.query.status);
 
   const bookings = await Booking.find(filter)
     .sort({ scheduledStart: -1 })
     .limit(200)
-    .populate('customer', 'name phone')
-    .populate('provider', 'name');
+    .populate("customer", "name phone")
+    .populate("provider", "name");
   res.json({ bookings: await withFlags(bookings) });
 };
 
 exports.getBooking = async (req, res) => {
   const booking = await Booking.findById(req.params.id)
-    .populate('customer', 'name phone')
-    .populate('provider', 'name');
-  if (!booking) return res.status(404).json({ message: 'Booking not found' });
+    .populate("customer", "name phone")
+    .populate("provider", "name");
+  if (!booking) return res.status(404).json({ message: "Booking not found" });
 
   const uid = req.user._id.toString();
-  const isParty = [booking.customer._id, booking.provider._id].some((id) => id.toString() === uid);
-  if (!isParty && req.user.role !== 'admin') {
-    return res.status(403).json({ message: 'You do not have permission to view this booking' });
+  const isParty = [booking.customer._id, booking.provider._id].some(
+    (id) => id.toString() === uid,
+  );
+  if (!isParty && req.user.role !== "admin") {
+    return res
+      .status(403)
+      .json({ message: "You do not have permission to view this booking" });
   }
   const [withFlag] = await withFlags([booking]);
   res.json({ booking: withFlag });
@@ -126,21 +221,40 @@ exports.getBooking = async (req, res) => {
 exports.updateStatus = async (req, res) => {
   const { status: next, reason } = req.body;
   const booking = await Booking.findById(req.params.id);
-  if (!booking) return res.status(404).json({ message: 'Booking not found' });
+  if (!booking) return res.status(404).json({ message: "Booking not found" });
 
   const uid = req.user._id.toString();
   const isCustomer = booking.customer.toString() === uid;
   const isProvider = booking.provider.toString() === uid;
   if (!isCustomer && !isProvider) {
-    return res.status(403).json({ message: 'This is not your booking' });
+    return res.status(403).json({ message: "This is not your booking" });
   }
-  const actorRole = isProvider ? 'provider' : 'customer';
+  const actorRole = isProvider ? "provider" : "customer";
 
   if (!isValidTransition(booking.status, next)) {
-    return res.status(409).json({ message: `A booking that is "${booking.status}" cannot become "${next}"` });
+    return res.status(409).json({
+      message: `A booking that is "${booking.status}" cannot become "${next}"`,
+    });
   }
   if (!canTransition(booking.status, next, actorRole)) {
-    return res.status(403).json({ message: `A ${actorRole} cannot change a booking to "${next}"` });
+    return res
+      .status(403)
+      .json({ message: `A ${actorRole} cannot change a booking to "${next}"` });
+  }
+
+  const profile = await ProviderProfile.findOne({
+    user: booking.provider,
+  });
+
+  if (
+    profile?.leaveStart &&
+    profile?.leaveEnd &&
+    booking.scheduledStart <= profile.leaveEnd &&
+    booking.scheduledEnd > profile.leaveStart
+  ) {
+    return res.status(409).json({
+      message: "This booking overlaps your leave period and cannot be accepted",
+    });
   }
 
   // Authoritative double-booking check (FR-15 / NFR-3) at the moment of acceptance
@@ -149,14 +263,17 @@ exports.updateStatus = async (req, res) => {
       booking.provider,
       booking.scheduledStart,
       booking.scheduledEnd,
-      booking._id
+      booking._id,
     );
     if (conflict) {
-      return res.status(409).json({ message: 'You already have a booking that overlaps this time slot' });
+      return res.status(409).json({
+        message: "You already have a booking that overlaps this time slot",
+      });
     }
   }
 
-  if (next === STATUS.ACCEPTED || next === STATUS.REJECTED) booking.respondedAt = new Date();
+  if (next === STATUS.ACCEPTED || next === STATUS.REJECTED)
+    booking.respondedAt = new Date();
   if (next === STATUS.CANCELLED) {
     booking.cancelledByRole = actorRole;
     booking.cancelReason = reason; // FR-16: reason is logged
@@ -170,9 +287,9 @@ exports.updateStatus = async (req, res) => {
   const other = isProvider ? booking.customer : booking.provider;
   await notify(
     other,
-    'booking',
+    "booking",
     `${req.user.name} ${STATUS_LABEL[next] || next} your ${booking.category} booking`,
-    `/bookings/${booking._id}`
+    `/bookings/${booking._id}`,
   );
 
   // FR-19: events that change a provider's reliability record trigger a recalculation
@@ -180,8 +297,58 @@ exports.updateStatus = async (req, res) => {
     next === STATUS.COMPLETED ||
     next === STATUS.ACCEPTED ||
     next === STATUS.REJECTED ||
-    (next === STATUS.CANCELLED && actorRole === 'provider');
+    (next === STATUS.CANCELLED && actorRole === "provider");
   if (affectsTrust) await recalculateForProvider(booking.provider);
 
   res.json({ booking });
+};
+
+exports.deleteAttachment = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+
+    if (!booking) {
+      return res.status(404).json({ message: "Booking not found" });
+    }
+
+    // Only the customer who created the booking can delete attachments.
+    if (booking.customer.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        message:
+          "Only the customer who created this booking can delete attachments",
+      });
+    }
+
+    const attachment = booking.attachments.find(
+      (file) => file.filename === req.params.filename,
+    );
+
+    if (!attachment) {
+      return res.status(404).json({ message: "Attachment not found" });
+    }
+
+    const filePath = path.resolve(__dirname, "../../", attachment.storagePath);
+
+    // Delete the physical file first. Keep the metadata if deletion fails.
+    try {
+      await fs.unlink(filePath);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+
+    booking.attachments = booking.attachments.filter(
+      (file) => file.filename !== req.params.filename,
+    );
+
+    await booking.save();
+
+    return res.json({ message: "Attachment deleted successfully" });
+  } catch (error) {
+    console.error("Failed to delete booking attachment:", error);
+    return res.status(500).json({
+      message: "Unable to delete attachment",
+    });
+  }
 };

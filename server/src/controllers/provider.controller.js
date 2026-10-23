@@ -72,3 +72,55 @@ exports.getProvider = async (req, res) => {
   if (!profile || !profile.isActive) return res.status(404).json({ message: 'Provider not found' });
   res.json({ profile });
 };
+
+
+exports.applyForLeave = async (req, res) => {
+  const { startDate, endDate } = req.body;
+
+  const isDateOnly = (value) =>
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) &&
+    new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+
+  if (!isDateOnly(startDate) || !isDateOnly(endDate)) {
+    return res.status(400).json({
+      message: 'Please provide valid start and end dates',
+    });
+  }
+
+  if (endDate < startDate) {
+    return res.status(400).json({
+      message: 'End date must be on or after the start date',
+    });
+  }
+
+  const today = new Date().toLocaleDateString('en-CA', {
+    timeZone: 'Asia/Kolkata',
+  });
+
+  if (startDate < today) {
+    return res.status(400).json({
+      message: 'Leave cannot start in the past',
+    });
+  }
+
+  const leaveStart = new Date(`${startDate}T00:00:00+05:30`);
+  const leaveEnd = new Date(`${endDate}T23:59:59.999+05:30`);
+
+  const profile = await ProviderProfile.findOneAndUpdate(
+    { user: req.user._id },
+    { leaveStart, leaveEnd },
+    {
+      new: true,
+      upsert: true,
+      runValidators: true,
+      setDefaultsOnInsert: true,
+    }
+  );
+
+  res.json({
+    message: 'Leave applied successfully',
+    profile,
+  });
+};

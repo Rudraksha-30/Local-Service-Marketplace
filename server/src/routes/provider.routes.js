@@ -28,7 +28,12 @@ router.put(
   validate,
   ctrl.upsertMyProfile
 );
-
+router.post(
+  '/me/leave',
+  protect,
+  authorize('provider'),
+  ctrl.applyForLeave
+);
 router.get('/:id', ctrl.getProvider);
 router.get('/:profileId/reviews', reviewCtrl.listForProvider);
 

@@ -37,4 +37,7 @@ router.patch(
   ctrl.updateMe
 );
 
+router.post('/refresh', ctrl.refresh);
+router.post('/logout', ctrl.logout);
+
 module.exports = router;

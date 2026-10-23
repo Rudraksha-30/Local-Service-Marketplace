@@ -64,3 +64,38 @@ exports.getForBooking = async (req, res) => {
   const review = await Review.findOne({ booking: booking._id });
   res.json({ review });
 };
+
+exports.updateReview = async (req, res) => {
+  const { rating, comment } = req.body;
+
+  const booking = await Booking.findById(req.params.bookingId);
+  if (!booking) {
+    return res.status(404).json({ message: 'Booking not found' });
+  }
+
+  if (booking.customer.toString() !== req.user._id.toString()) {
+    return res.status(403).json({
+      message: 'You can only edit reviews for your own bookings',
+    });
+  }
+
+  if (booking.status !== STATUS.COMPLETED) {
+    return res.status(409).json({
+      message: 'You can only edit a review for a completed booking',
+    });
+  }
+
+  const review = await Review.findOne({ booking: booking._id });
+
+  if (!review) {
+    return res.status(404).json({ message: 'Review not found' });
+  }
+
+  review.rating = rating;
+  review.comment = comment || '';
+  await review.save();
+
+  const trust = await recalculateForProvider(booking.provider);
+
+  res.json({ review, trust });
+};
